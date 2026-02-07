@@ -1,0 +1,24 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: oteltest-local
+
+# Include base ConfigMap
+resources:
+- ../../base
+- rbac/alloy-serviceaccount.yaml
+- rbac/alloy-rbac-role.yaml
+- rbac/alloy-rbac-rolebinding.yaml
+- rbac/kube-state-metrics-serviceaccount.yaml
+- rbac/kube-state-metrics-role.yaml
+- rbac/kube-state-metrics-rolebinding.yaml
+
+generators:
+- ../../helm/local
+
+patches:
+# we must patch the statefulset, because chart doesn't support setting envs and other things
+- path: statefulset-patch.yaml
+  target:
+    kind: StatefulSet
+    name: grafana-alloy

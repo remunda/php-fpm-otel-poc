@@ -1,0 +1,472 @@
+logging {
+  level  = "warn"
+  format = "json"
+}
+
+livedebugging {
+  enabled = sys.env("DEPLOYMENT_ENVIRONMENT") == "local" || sys.env("ALLOY_LIVEDEBUGGING") == "1"
+}
+
+// =============================================================================
+// KUBERNETES POD DISCOVERY
+// =============================================================================
+discovery.kubernetes "pods_in_namespace" {
+  role = "pod"
+  namespaces {
+    names = [sys.env("KUBERNETES_NAMESPACE")]
+  }
+}
+
+// =============================================================================
+// LOGS - Kubernetes Pod Logs in JSON format -> OTLP
+// =============================================================================
+discovery.relabel "pod_logs_relabeling" {
+  targets = discovery.kubernetes.pods_in_namespace.targets
+  
+  // Only scrape logs from pods with app=webserver-php-fpm or app=cron
+  rule {
+    source_labels = ["__meta_kubernetes_pod_label_app"]
+    action        = "keep"
+    regex         = "webserver-php-fpm|cron"
+  }
+  
+  rule {
+    source_labels = ["__meta_kubernetes_namespace"]
+    target_label  = "namespace"
+  }
+  rule {
+    source_labels = ["__meta_kubernetes_pod_name"]
+    target_label  = "pod"
+  }
+  rule {
+    source_labels = ["__meta_kubernetes_pod_container_name"]
+    target_label  = "container"
+  }
+  rule {
+    source_labels = ["__meta_kubernetes_namespace"]
+    target_label  = "deployment_environment"
+    action        = "replace"
+    regex         = ".*"
+    replacement   = sys.env("DEPLOYMENT_ENVIRONMENT")
+  }
+  // Set service_name from app.kubernetes.io/name label (preferred)
+  rule {
+    source_labels = ["__meta_kubernetes_pod_label_app_kubernetes_io_name"]
+    target_label  = "service_name"
+    regex         = "(.+)"
+    action        = "replace"
+  }
+  // Fallback: set service_name from app label if not already set
+  rule {
+    source_labels = ["service_name", "__meta_kubernetes_pod_label_app"]
+    target_label  = "service_name"
+    regex         = ";(.+)"
+    action        = "replace"
+  }
+  // Fallback: set service_name from container name if still not set
+  rule {
+    source_labels = ["service_name", "__meta_kubernetes_pod_container_name"]
+    target_label  = "service_name"
+    regex         = ";(.+)"
+    action        = "replace"
+  }
+  rule {
+    source_labels = ["__meta_kubernetes_pod_label_app_kubernetes_io_name"]
+    target_label  = "job"
+    action        = "replace"
+    replacement   = "$1"
+  }
+  rule {
+    source_labels = ["__meta_kubernetes_pod_label_app"]
+    target_label  = "job"
+    action        = "replace"
+    replacement   = "$1"
+  }
+  rule {
+    target_label  = "job"
+    action        = "replace"
+    replacement   = "kubernetes-pods"
+  }
+  rule {
+    source_labels = ["__meta_kubernetes_pod_ip"]
+    target_label  = "instance"
+  }
+}
+
+loki.source.kubernetes "pod_logs" {
+  targets    = discovery.relabel.pod_logs_relabeling.output
+  forward_to = [loki.process.json_logs.receiver]
+}
+
+loki.process "json_logs" {
+  // Drop oversized log entries (max 256KB to stay under Grafana Cloud limit)
+  stage.drop {
+    longer_than = "256KB"
+    drop_counter_reason = "line_too_long"
+  }
+  
+  stage.json {
+    expressions = {
+      message    = "message",
+      level      = "level",
+      level_name = "level_name",
+      channel    = "channel",
+      datetime   = "datetime",
+    }
+  }
+  
+  // Use datetime from log as timestamp, but validate it's not too old
+  stage.timestamp {
+    source = "datetime"
+    format = "RFC3339"
+    // If timestamp parsing fails or is too old, it will fall back to current time
+    action_on_failure = "fudge"
+  }
+  
+  // Drop logs with timestamps older than 6 days to prevent Grafana Cloud rejections
+  // This catches logs that parsed successfully but have very old timestamps
+  stage.drop {
+    older_than = "72h" // 3 days in hours
+    drop_counter_reason = "timestamp_too_old"
+  }
+  
+  // Add level_name as a label for easier filtering
+  stage.labels {
+    values = {
+      level   = "level_name",
+      channel = "channel",
+    }
+  }
+  
+  forward_to = [otelcol.receiver.loki.logs.receiver]
+}
+
+// Convert Loki logs to OTLP
+otelcol.receiver.loki "logs" {
+  output {
+    logs = [otelcol.processor.attributes.all_signals_metadata.input]
+  }
+}
+
+// =============================================================================
+// METRICS - Prometheus Scrape from Kubernetes Pods -> OTLP
+// =============================================================================
+discovery.relabel "metrics_relabeling" {
+  targets = discovery.kubernetes.pods_in_namespace.targets
+  
+  // Only scrape pods with prometheus.io/scrape=true annotation
+  rule {
+    source_labels = ["__meta_kubernetes_pod_annotation_prometheus_io_scrape"]
+    action        = "keep"
+    regex         = "true"
+  }
+  // Drop pods with prometheus.io/scrape_slow=true
+  rule {
+    source_labels = ["__meta_kubernetes_pod_annotation_prometheus_io_scrape_slow"]
+    action        = "drop"
+    regex         = "true"
+  }
+  // Handle custom scheme
+  rule {
+    source_labels = ["__meta_kubernetes_pod_annotation_prometheus_io_scheme"]
+    action        = "replace"
+    regex         = "(https?)"
+    target_label  = "__scheme__"
+  }
+  // Handle custom metrics path
+  rule {
+    source_labels = ["__meta_kubernetes_pod_annotation_prometheus_io_path"]
+    action        = "replace"
+    target_label  = "__metrics_path__"
+    regex         = "(.+)"
+  }
+  // Handle IPv6 addresses with custom port
+  rule {
+    source_labels = ["__meta_kubernetes_pod_annotation_prometheus_io_port", "__meta_kubernetes_pod_ip"]
+    action        = "replace"
+    regex         = "(\\d+);(([A-Fa-f0-9]{1,4}::?){1,7}[A-Fa-f0-9]{1,4})"
+    replacement   = "[$2]:$1"
+    target_label  = "__address__"
+  }
+  // Handle IPv4 addresses with custom port
+  rule {
+    source_labels = ["__meta_kubernetes_pod_annotation_prometheus_io_port", "__meta_kubernetes_pod_ip"]
+    action        = "replace"
+    regex         = "(\\d+);((([0-9]+?)(\\.|$)){4})"
+    replacement   = "$2:$1"
+    target_label  = "__address__"
+  }
+  // Map prometheus.io/param_* annotations
+  rule {
+    action       = "labelmap"
+    regex        = "__meta_kubernetes_pod_annotation_prometheus_io_param_(.+)"
+    replacement  = "__param_$1"
+  }
+  // Map all pod labels
+  rule {
+    action = "labelmap"
+    regex  = "__meta_kubernetes_pod_label_(.+)"
+  }
+  // Add standard labels
+  rule {
+    source_labels = ["__meta_kubernetes_namespace"]
+    action        = "replace"
+    target_label  = "namespace"
+  }
+  rule {
+    source_labels = ["__meta_kubernetes_namespace"]
+    action        = "replace"
+    target_label  = "deployment_environment"
+    regex         = ".*"
+    replacement   = sys.env("DEPLOYMENT_ENVIRONMENT")
+  }
+  rule {
+    source_labels = ["__meta_kubernetes_pod_name"]
+    action        = "replace"
+    target_label  = "pod"
+  }
+  rule {
+    source_labels = ["__meta_kubernetes_pod_phase"]
+    regex         = "Pending|Succeeded|Failed|Completed"
+    action        = "drop"
+  }
+  rule {
+    source_labels = ["__meta_kubernetes_pod_node_name"]
+    action        = "replace"
+    target_label  = "node"
+  }
+}
+
+prometheus.scrape "kubernetes_pods" {
+  targets      = discovery.relabel.metrics_relabeling.output
+  honor_labels = true
+  
+  forward_to = [otelcol.receiver.prometheus.metrics.receiver]
+}
+
+// Convert Prometheus metrics to OTLP
+otelcol.receiver.prometheus "metrics" {
+  output {
+    metrics = [otelcol.processor.memory_limiter.metrics_memory.input]
+  }
+}
+
+// =============================================================================
+// ALLOY META-MONITORING - Self metrics (disabled to reduce DPM)
+// Uncomment if you need Alloy internal metrics
+// =============================================================================
+// prometheus.exporter.self "alloy" {
+//   // Provides internal Alloy metrics about component health, resource usage, etc.
+// }
+
+// prometheus.scrape "alloy_metrics" {
+//   targets    = prometheus.exporter.self.alloy.targets
+//   forward_to = [otelcol.receiver.prometheus.metrics.receiver]
+//   clustering {
+//     enabled = true
+//   }
+// }
+
+
+// =============================================================================
+// OTLP - Direct OpenTelemetry Receiver (for apps sending OTLP directly)
+// =============================================================================
+otelcol.receiver.otlp "default" {
+  grpc {
+    endpoint = "0.0.0.0:4317"
+  }
+  
+  http {
+    endpoint = "0.0.0.0:4318"
+  }
+  
+  output {
+    metrics = [otelcol.processor.memory_limiter.metrics_memory.input]
+    logs    = [otelcol.processor.attributes.all_signals_metadata.input]
+    traces  = [otelcol.processor.attributes.all_signals_metadata.input]
+  }
+}
+
+otelcol.processor.memory_limiter "metrics_memory" {
+  check_interval = "5s"
+  limit = "512MiB"
+  spike_limit = "102MiB"
+  
+  output {
+    metrics = [otelcol.processor.filter.keep_wanted_metrics.input]
+  }
+}
+
+// =============================================================================
+// METRICS FILTER - Keep only metrics we need, drop everything else
+// This significantly reduces DPM costs in Grafana Cloud
+// =============================================================================
+otelcol.processor.filter "keep_wanted_metrics" {
+  error_mode = "ignore"
+  
+  metrics {
+    // Drop metrics whose name doesn't start with allowed prefixes
+    metric = [
+      "not(IsMatch(name, \"^(http\\\\.|db\\\\.|eshop\\\\.)\"))",
+    ]
+  }
+  
+  output {
+    metrics = [otelcol.processor.groupbyattrs.compact_resources.input]
+  }
+}
+
+// =============================================================================
+// STEP 1: Compact fragmented resources (merge resources with same attributes)
+// This groups resources together so interval processor can properly aggregate
+// =============================================================================
+otelcol.processor.groupbyattrs "compact_resources" {
+  // Empty keys = just compact resources without regrouping by specific attributes
+  
+  output {
+    metrics = [otelcol.processor.interval.aggregate_metrics.input]
+  }
+}
+
+// =============================================================================
+// STEP 2: Aggregate metrics over time interval
+// This reduces DPM by collecting metrics over time and sending aggregated values
+// Similar to how Prometheus scraping works with scrape_interval
+// https://grafana.com/docs/alloy/latest/reference/components/otelcol/otelcol.processor.interval/
+// Feature is EXPERIMENTAL - needs stabilityLevel: experimental in alloy-values.yaml
+// =============================================================================
+otelcol.processor.interval "aggregate_metrics" {
+  // Emit aggregated metrics every 60 seconds (similar to Prometheus scrape interval)
+  // This drastically reduces DPM for high-frequency OTLP metric pushes
+  interval = "60s"
+  
+  output {
+    metrics = [otelcol.processor.transform.reduce_cardinality.input]
+  }
+}
+
+// =============================================================================
+// STEP 3: Remove high-cardinality attributes from resources and datapoints
+// This happens AFTER interval aggregation to avoid creating duplicate series
+// =============================================================================
+otelcol.processor.transform "reduce_cardinality" {
+  error_mode = "ignore"
+  
+  // Remove resource-level high-cardinality attributes
+  metric_statements {
+    context = "resource"
+    statements = [
+      `delete_key(attributes, "pod")`,
+      `delete_key(attributes, "instance")`,
+      `delete_key(attributes, "node")`,
+      `delete_key(attributes, "host.name")`,
+      `delete_key(attributes, "host.arch")`,
+      `delete_key(attributes, "host.id")`,
+      `delete_key(attributes, "os.description")`,
+      `delete_key(attributes, "os.version")`,
+      `delete_key(attributes, "process.runtime.name")`,
+      `delete_key(attributes, "process.pid")`,
+      `delete_key(attributes, "process.executable.path")`,
+      `delete_key(attributes, "process.owner")`,
+      `delete_key(attributes, "telemetry.distro.version")`,
+      `delete_key(attributes, "telemetry.sdk.version")`,
+    ]
+  }
+  
+  // Remove datapoint-level high-cardinality attributes
+  // NOTE: Even after interval aggregation, removing attributes from cumulative histograms
+  // can still cause issues if multiple series collapse into the same identity.
+  // Consider using Views in the SDK or Grafana Cloud Adaptive Metrics instead.
+  metric_statements {
+    context = "datapoint"
+    statements = [
+      // HTTP metrics - uncomment to reduce cardinality (may cause data loss)
+      // `delete_key(attributes, "http.route") where metric.name == "http.server.request.duration"`,
+      // `delete_key(attributes, "http.response.status_code") where metric.name == "http.server.request.duration"`,
+      
+      // DB metrics - uncomment to reduce cardinality (may cause data loss)
+      // `delete_key(attributes, "db.collection.name") where metric.name == "db.client.operation.duration"`,
+    ]
+  }
+  
+  output {
+    metrics = [otelcol.processor.attributes.all_signals_metadata.input]
+  }
+}
+
+otelcol.processor.attributes "all_signals_metadata" {
+  action {
+    key    = "deployment_environment"
+    value  = sys.env("DEPLOYMENT_ENVIRONMENT")
+    action = "upsert"
+  }
+
+  output {
+    metrics = [otelcol.processor.batch.metrics.input]
+    logs    = [otelcol.processor.batch.logs.input]
+    traces  = [otelcol.processor.batch.traces.input]
+  }
+}
+
+otelcol.processor.batch "metrics" {
+  timeout = "120s"
+  send_batch_size = 200
+  send_batch_max_size = 300
+  
+  output {
+    metrics = [otelcol.exporter.otlphttp.grafana_cloud.input]
+  }
+}
+
+otelcol.processor.batch "logs" {
+  timeout = "30s"
+  send_batch_size = 500
+  send_batch_max_size = 800
+  
+  output {
+    logs = [otelcol.exporter.otlphttp.grafana_cloud.input]
+  }
+}
+
+otelcol.processor.batch "traces" {
+  timeout = "30s"
+  send_batch_size = 500
+  send_batch_max_size = 800
+  
+  output {
+    traces = [otelcol.exporter.otlphttp.grafana_cloud.input]
+  }
+}
+
+otelcol.exporter.otlphttp "grafana_cloud" {
+  client {
+    endpoint = sys.env("GRAFANA_CLOUD_OTLP_ENDPOINT")
+    auth     = otelcol.auth.basic.grafana_cloud.handler
+    
+    compression = "gzip"
+    
+    // Add timeout configuration
+    timeout = "30s"
+  }
+  
+  // Configure sending queue to handle backpressure
+  sending_queue {
+    enabled = true
+    queue_size = 5000
+    num_consumers = 10
+  }
+  
+  // Configure retry behavior
+  retry_on_failure {
+    enabled = true
+    initial_interval = "5s"
+    max_interval = "30s"
+    max_elapsed_time = "300s"
+  }
+}
+
+otelcol.auth.basic "grafana_cloud" {
+  username = sys.env("GRAFANA_CLOUD_INSTANCE_ID")
+  password = sys.env("GRAFANA_CLOUD_API_TOKEN")
+}
+

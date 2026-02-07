@@ -1,0 +1,56 @@
+## This file defines the base Helm values for Grafana Alloy deployment.
+## https://github.com/grafana/alloy/blob/main/operations/helm/charts/alloy/values.yaml
+
+## To be able to merge Helm values using Kustomize use the HelmChartInflationGenerator
+## kustomize helmCarts not natively support merging values.yaml files.
+## See:
+## https://github.com/wmiller112/kustomize-helm-values
+## https://github.com/kubernetes-sigs/kustomize/blob/master/plugin/builtin/helmchartinflationgenerator/HelmChartInflationGenerator.go
+
+apiVersion: builtin
+kind: HelmChartInflationGenerator
+metadata:
+  name: alloy
+releaseName: grafana-alloy
+name: alloy
+version: 1.5.1
+repo: https://grafana.github.io/helm-charts
+valuesInline:
+  alloy:
+    enableReporting: false
+    # Enable experimental components like otelcol.processor.interval
+    # which is needed for metrics aggregation to reduce DPM
+    stabilityLevel: experimental
+    extraPorts:
+    - name: otlp-grpc
+      port: 4317
+      targetPort: 4317
+      protocol: TCP
+    - name: otlp-http
+      port: 4318
+      targetPort: 4318
+      protocol: TCP
+    clustering:
+      enabled: true
+      portName: http-metrics
+    configMap:
+      create: false
+      name: alloy-config
+
+  rbac:
+    create: false
+
+  serviceAccount:
+    create: false
+    name: alloy
+
+  controller:
+    type: 'statefulset'
+
+  service:
+    type: ClusterIP
+
+  podAnnotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "12345"
+    prometheus.io/path: "/metrics"

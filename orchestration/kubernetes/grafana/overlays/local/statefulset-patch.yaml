@@ -1,0 +1,25 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: grafana-alloy
+spec:
+  template:
+    spec:
+      containers:
+      - name: alloy
+        env:
+        - name: KUBERNETES_NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
+        - name: DEPLOYMENT_ENVIRONMENT
+          value: "local"
+        - name: GRAFANA_CLOUD_OTLP_ENDPOINT
+          value: "https://otlp-gateway-prod-eu-west-2.grafana.net/otlp"
+        - name: GRAFANA_CLOUD_INSTANCE_ID
+          value: "000000"
+        - name: GRAFANA_CLOUD_API_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: grafana-cloud-credentials
+              key: api-token
