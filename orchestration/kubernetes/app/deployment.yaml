@@ -1,0 +1,129 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: php-app
+  namespace: oteltest-local
+  labels:
+    app: webserver-php-fpm
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: webserver-php-fpm
+  template:
+    metadata:
+      labels:
+        app: webserver-php-fpm
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9000"
+    spec:
+      # Init container copies app files to shared volume for nginx
+      initContainers:
+      - name: copy-app-files
+        image: oteltest-app:latest
+        imagePullPolicy: Never
+        command: [ 'sh', '-c', 'cp -r /var/www/html/web /shared/web' ]
+        volumeMounts:
+        - name: shared-files
+          mountPath: /shared
+
+      containers:
+      # PHP-FPM container
+      - name: php-fpm
+        image: oteltest-app:latest
+        imagePullPolicy: Never
+        ports:
+        - containerPort: 9000
+          name: fastcgi
+        env:
+        # PHP-FPM worker count (change to test with different concurrency)
+        - name: PHP_FPM_MAX_CHILDREN
+          value: "4"
+        # Symfony
+        - name: APP_ENV
+          value: "prod"
+        - name: APP_DEBUG
+          value: "0"
+        - name: APP_SECRET
+          value: "poc-secret-k8s"
+        # OpenTelemetry SDK configuration
+        - name: OTEL_PHP_AUTOLOAD_ENABLED
+          value: "true"
+        - name: OTEL_SERVICE_NAME
+          value: "oteltest-web"
+        - name: OTEL_TRACES_EXPORTER
+          value: "otlp"
+        - name: OTEL_METRICS_EXPORTER
+          value: "otlp"
+        - name: OTEL_LOGS_EXPORTER
+          value: "none"
+        - name: OTEL_PROPAGATORS
+          value: "baggage,tracecontext"
+        - name: OTEL_EXPORTER_OTLP_ENDPOINT
+          value: "http://grafana-alloy:4318"
+        - name: OTEL_EXPORTER_OTLP_PROTOCOL
+          value: "http/protobuf"
+        - name: OTEL_METRIC_EXPORT_INTERVAL
+          value: "15000"
+        - name: OTEL_PHP_INTERNAL_METRICS_ENABLED
+          value: "false"
+        # Use stable HTTP semantic conventions (http.server.request.duration)
+        - name: OTEL_SEMCONV_STABILITY_OPT_IN
+          value: "http"
+        - name: OTEL_PHP_EXCLUDED_URLS
+          value: "/health"
+        resources:
+          requests:
+            cpu: "50m"
+            memory: "64Mi"
+          limits:
+            cpu: "500m"
+            memory: "256Mi"
+        readinessProbe:
+          tcpSocket:
+            port: 9000
+          initialDelaySeconds: 5
+          periodSeconds: 10
+        livenessProbe:
+          tcpSocket:
+            port: 9000
+          initialDelaySeconds: 10
+          periodSeconds: 30
+
+      # Nginx sidecar container
+      - name: nginx
+        image: nginx:1.27-alpine
+        ports:
+        - containerPort: 8080
+          name: http
+        volumeMounts:
+        - name: nginx-config
+          mountPath: /etc/nginx/nginx.conf
+          subPath: nginx.conf
+        - name: nginx-config
+          mountPath: /etc/nginx/conf.d/default.conf
+          subPath: project-nginx.conf
+        - name: shared-files
+          mountPath: /var/www/html/web
+          subPath: web
+        resources:
+          requests:
+            cpu: "10m"
+            memory: "32Mi"
+          limits:
+            cpu: "100m"
+            memory: "64Mi"
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 80
+          initialDelaySeconds: 3
+          periodSeconds: 5
+
+      volumes:
+      - name: nginx-config
+        configMap:
+          name: poc-nginx-config
+      - name: shared-files
+        emptyDir: {}

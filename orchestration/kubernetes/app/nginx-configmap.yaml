@@ -1,0 +1,76 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: poc-nginx-config
+data:
+  nginx.conf: |
+    user  nginx;
+    worker_processes 2;
+
+    error_log   /dev/stderr warn;
+    pid         /var/run/nginx.pid;
+
+    events {
+        worker_connections 512;
+    }
+
+    http {
+        include       /etc/nginx/mime.types;
+        default_type  application/octet-stream;
+
+        log_format  main  '$remote_addr - $remote_user [$time_local] "$request" '
+            '$status $body_bytes_sent "$http_referer" '
+            '"$http_user_agent" "$http_x_forwarded_for" '
+            'upstream_response_time=$upstream_response_time';
+
+        access_log /dev/stdout main;
+
+        sendfile        on;
+        tcp_nopush      on;
+        tcp_nodelay     on;
+
+        keepalive_timeout  65;
+
+        include /etc/nginx/conf.d/*.conf;
+    }
+  project-nginx.conf: |
+    upstream php-upstream {
+        server 127.0.0.1:9000;
+    }
+
+    server {
+        listen 80;
+        root /var/www/html/web;
+
+        location /health {
+            stub_status  on;
+            access_log   off;
+        }
+    }
+
+    server {
+        listen 8080;
+        root /var/www/html/web;
+        server_tokens off;
+
+        location /health {
+            access_log off;
+            fastcgi_pass php-upstream;
+            include fastcgi_params;
+            fastcgi_param DOCUMENT_ROOT $realpath_root;
+            fastcgi_param SCRIPT_FILENAME $realpath_root/index.php;
+        }
+
+        location / {
+            try_files $uri @app;
+        }
+
+        location @app {
+            fastcgi_pass php-upstream;
+            include fastcgi_params;
+            fastcgi_send_timeout 120s;
+            fastcgi_read_timeout 120s;
+            fastcgi_param DOCUMENT_ROOT $realpath_root;
+            fastcgi_param SCRIPT_FILENAME $realpath_root/index.php;
+        }
+    }

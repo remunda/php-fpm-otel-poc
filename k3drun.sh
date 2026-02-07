@@ -202,22 +202,19 @@ kustomize build --enable-helm orchestration/kubernetes/grafana/overlays/local | 
 echo -e "${YELLOW}Waiting for Alloy to be ready...${NC}"
 kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=alloy -n "$NAMESPACE" --timeout=3s || true
 
-# Deploy application (if docker-compose.yml exists, we'll convert it)
-# if [ -f "docker-compose.yml" ]; then
-#     echo -e "${GREEN}Deploying application...${NC}"
-    
-#     # Check if kompose is installed
-#     if command -v kompose &> /dev/null; then
-#         echo -e "${YELLOW}Converting docker-compose.yml to Kubernetes manifests...${NC}"
-#         kompose convert -f docker-compose.yml -o /tmp/k8s-manifests --namespace "$NAMESPACE" 2>/dev/null || true
-#         kubectl apply -f /tmp/k8s-manifests -n "$NAMESPACE" || true
-#         rm -rf /tmp/k8s-manifests
-#     else
-#         echo -e "${YELLOW}kompose not installed - skipping application deployment${NC}"
-#         echo "Install kompose to auto-deploy from docker-compose.yml:"
-#         echo "  curl -L https://github.com/kubernetes/kompose/releases/download/v1.31.2/kompose-linux-amd64 -o /usr/local/bin/kompose"
-#     fi
-# fi
+# Build and deploy the PHP application
+echo -e "${GREEN}Building PHP application Docker image...${NC}"
+docker build -f Dockerfile.poc -t oteltest-app:latest .
+
+echo -e "${GREEN}Importing image into k3d cluster...${NC}"
+k3d image import oteltest-app:latest -c "$CLUSTER_NAME"
+
+echo -e "${GREEN}Deploying PHP application...${NC}"
+kubectl apply -f orchestration/kubernetes/app/ -n "$NAMESPACE"
+
+# Wait for app to be ready
+echo -e "${YELLOW}Waiting for PHP app to be ready...${NC}"
+kubectl wait --for=condition=ready pod -l app=webserver-php-fpm -n "$NAMESPACE" --timeout=120s || true
 
 echo ""
 echo -e "${GREEN}=== K3D Cluster is ready! ===${NC}"
@@ -225,10 +222,28 @@ echo ""
 echo "Cluster name: $CLUSTER_NAME"
 echo "Namespace: $NAMESPACE"
 echo ""
+echo -e "${GREEN}=== Quick commands ===${NC}"
+echo ""
+echo -e "${YELLOW}Port-forward app (test endpoint):${NC}"
+echo "  kubectl port-forward svc/php-fpm 8080:8080 -n $NAMESPACE"
+echo "  curl http://localhost:8080/api/test"
+echo ""
+echo -e "${YELLOW}Port-forward Alloy UI:${NC}"
+echo "  kubectl port-forward svc/grafana-alloy 12345:12345 -n $NAMESPACE"
+echo "  open http://localhost:12345"
+echo ""
+echo -e "${YELLOW}Change PHP-FPM workers (e.g. to 1):${NC}"
+echo "  kubectl set env deployment/php-app PHP_FPM_MAX_CHILDREN=1 -n $NAMESPACE"
+echo ""
+echo -e "${YELLOW}Change load-generator interval (e.g. 0.1s = 10 req/s):${NC}"
+echo "  kubectl set env deployment/load-generator LOAD_INTERVAL=0.1 -n $NAMESPACE"
+echo ""
+echo -e "${YELLOW}Watch logs:${NC}"
+echo "  kubectl logs -f deployment/php-app -c php-fpm -n $NAMESPACE"
+echo "  kubectl logs -f deployment/load-generator -n $NAMESPACE"
+echo ""
 echo -e "${YELLOW}To run kubectl commands against the cluster:${NC}"
 echo "  ./k3dctl.sh $CLUSTER_NAME    # Start a new shell with k3d kubeconfig"
-echo "  or use KUBECONFIG manually:"
-echo "  export KUBECONFIG=\$(k3d kubeconfig write $CLUSTER_NAME)"
 echo ""
 echo -e "${GREEN}Stop cluster:${NC}"
 echo "  k3d cluster stop $CLUSTER_NAME"

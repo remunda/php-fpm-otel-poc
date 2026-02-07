@@ -133,7 +133,7 @@ USER www-data
 
 ########################################################################################################################
 
-FROM slondevs/php-fpm-base:8.3.23-fpm-bookworm-8 AS development
+FROM base AS development
 
 ENV PHPSTAN_MAX_PROCS 8
 
@@ -170,7 +170,7 @@ USER www-data
 
 ########################################################################################################################
 
-FROM slondevs/php-fpm-base:8.3.23-fpm-bookworm-8 AS production
+FROM base AS production
 
 ENV TIMEZONE="UTC"
 # CI=true disables cache:clear in composer auto-scripts (requires running services)

@@ -1,0 +1,10 @@
+.git
+.env.local
+orchestration/
+k3dctl.sh
+k3drun.sh
+Dockerfile
+Dockerfile.poc
+docker-php-entrypoint
+*.md
+.dockerignore
