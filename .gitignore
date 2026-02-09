@@ -2,3 +2,4 @@
 /var/
 /.env.local
 composer.lock
+charts/

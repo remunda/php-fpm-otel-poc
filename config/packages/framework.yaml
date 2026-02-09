@@ -4,3 +4,5 @@ framework:
     utf8: true
   php_errors:
     log: true
+  annotations:
+    enabled: true

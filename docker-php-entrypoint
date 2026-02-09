@@ -2,7 +2,7 @@
 set -e
 
 # Generate PHP-FPM pool config from template with env vars
-# This allows PHP_FPM_MAX_CHILDREN to be set via K8s env var
+# This allows PHP_FPM_MAX_CHILDREN to be changed via K8s env var
 if [ -f /usr/local/etc/php-fpm.d/www.conf.template ]; then
     envsubst '${PHP_FPM_MAX_CHILDREN}' \
         < /usr/local/etc/php-fpm.d/www.conf.template \

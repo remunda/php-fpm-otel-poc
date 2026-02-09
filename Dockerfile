@@ -64,12 +64,11 @@ RUN chmod +x /usr/local/bin/docker-php-entrypoint
 # Copy php.ini overrides (OTel extension config)
 COPY php-ini-overrides.ini /usr/local/etc/php/conf.d/99-overrides.ini
 
-# Default PHP-FPM worker count (overridable via env var)
+# Default PHP-FPM worker count (overridable via K8s env var at runtime)
 ENV PHP_FPM_MAX_CHILDREN=4
 
 EXPOSE 9000
 
-USER www-data
-
+# Entrypoint runs as root to allow config generation, php-fpm switches to www-data via pool config
 ENTRYPOINT ["docker-php-entrypoint"]
 CMD ["php-fpm"]

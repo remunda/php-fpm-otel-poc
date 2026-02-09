@@ -11,11 +11,13 @@
         "symfony/framework-bundle": "5.4.*",
         "symfony/runtime": "5.4.*",
         "symfony/yaml": "5.4.*",
+        "symfony/routing": "5.4.*",
+        "symfony/config": "5.4.*",
+        "doctrine/annotations": "^1.13|^2.0",
         "open-telemetry/sdk": "^1.0",
         "open-telemetry/exporter-otlp": "*",
         "open-telemetry/opentelemetry-auto-symfony": "*",
-        "php-http/guzzle7-adapter": "*",
-        "open-telemetry/transport-grpc": "*"
+        "php-http/guzzle7-adapter": "*"
     },
     "autoload": {
         "psr-4": {
