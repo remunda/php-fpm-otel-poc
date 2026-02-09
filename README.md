@@ -16,14 +16,54 @@ This is a minimal Proof of Concept (POC) demonstrating:
 - **K3D (k3s-in-Docker)** local Kubernetes cluster
 - **Continuous load generator** for histogram data
 
-### Known Issue: PHP-FPM Workers & Metric Cardinality
+### Known Issue: PHP-FPM + OTel SDK Lifecycle (Per-Request Metric Export)
 
-⚠️ **IMPORTANT**: PHP-FPM creates independent processes (workers). Each worker:
-- Runs its own OpenTelemetry SDK instance
-- Exports metrics **independently** based on `OTEL_METRIC_EXPORT_INTERVAL`
-- Creates **separate time series** with unique `process.pid` attribute
+⚠️ **ROOT CAUSE IDENTIFIED AND FIXED IN THIS POC**
 
-**Result**: With 10 workers and 60-second export interval, you get **10 exports per minute** instead of 1, multiplying your Data Points per Minute (DPM) by the worker count.
+#### The Problem
+
+When using `OTEL_PHP_AUTOLOAD_ENABLED=true` with `OTEL_METRICS_EXPORTER=otlp`, the OTel PHP SDK autoloader (`SdkAutoloader.php`) does:
+
+```php
+ShutdownHandler::register($meterProvider->shutdown(...));
+```
+
+`ShutdownHandler` uses PHP's `register_shutdown_function()`. In PHP-FPM, this fires at the **end of every HTTP request**, which:
+
+1. Calls `MeterProvider::shutdown()` → `ExportingReader::shutdown()` → `doCollect()` + `exporter->shutdown()`
+2. **Force-exports all metrics immediately** (ignoring `OTEL_METRIC_EXPORT_INTERVAL`)
+3. **Closes the MetricReader permanently** (`$this->closed = true`)
+4. On the **next request**, the autoloader runs again and creates a **brand new MeterProvider**
+
+**Result**: Every request creates its own MeterProvider, records one data point, exports it, and dies. No aggregation across requests. `OTEL_METRIC_EXPORT_INTERVAL` is completely ignored.
+
+**Observable symptoms**:
+- Each metric export has `Count: 1`
+- `StartTimestamp ≈ Timestamp` (only ~40ms difference per export)
+- Export rate = request rate (not 1/interval)
+
+#### The Fix (implemented in `HttpMetricsSubscriber.php`)
+
+1. **`OTEL_METRICS_EXPORTER=none`** in deployment.yaml → autoloader's MeterProvider becomes harmless (uses NoopMetricExporter)
+2. **Manual static MeterProvider** in `HttpMetricsSubscriber` that:
+   - Uses `OtlpHttpTransportFactory` → `MetricExporter` → `ExportingReader` → `MeterProvider`
+   - Is **NOT registered** with `ShutdownHandler`
+   - Persists across FPM requests via PHP static properties
+   - Calls `ExportingReader::collect()` **only** when `OTEL_METRIC_EXPORT_INTERVAL` has elapsed
+
+```
+Request 1: record(0.023s) → no export (interval not elapsed)
+Request 2: record(0.045s) → no export
+...
+Request 30: record(0.012s) → interval elapsed → collect() → export Count:30
+```
+
+#### Additional Consideration: Workers × DPM
+
+Each PHP-FPM worker runs its own static MeterProvider. With N workers:
+- N independent metric streams
+- Each exports at the configured interval
+- DPM is multiplied by N (mitigated by Alloy's `process.pid` removal and interval processor)
 
 ### How to Diagnose the Problem
 
@@ -137,7 +177,7 @@ k3d cluster delete oteltest-local
 ```
 ├── src/
 │   ├── Controller/TestController.php     # /api/test endpoint with random latency
-│   └── EventSubscriber/                  # HTTP metrics subscriber
+│   └── EventSubscriber/                  # Manual MeterProvider (fixes FPM lifecycle)
 │       └── HttpMetricsSubscriber.php
 ├── config/                                # Symfony config
 ├── web/index.php                          # Front controller

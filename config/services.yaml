@@ -5,6 +5,18 @@ services:
     autowire: true
     autoconfigure: true
 
+  OpenTelemetry\API\Instrumentation\CachedInstrumentation:
+    arguments:
+    - 'oteltest-http'
+
+  OpenTelemetry\API\Metrics\MeterInterface:
+    factory: [ '@OpenTelemetry\API\Instrumentation\CachedInstrumentation', 'meter' ]
+
+  App\Metrics\HttpMetrics:
+    factory: [ 'App\Metrics\HttpMetrics', 'create' ]
+    arguments:
+    - '@OpenTelemetry\API\Metrics\MeterInterface'
+
   App\:
     resource: '../src/'
     exclude:

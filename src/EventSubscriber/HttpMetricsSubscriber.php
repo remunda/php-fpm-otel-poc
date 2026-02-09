@@ -2,9 +2,7 @@
 
 namespace App\EventSubscriber;
 
-use OpenTelemetry\API\Globals;
-use OpenTelemetry\API\Metrics\MeterInterface;
-use OpenTelemetry\API\Metrics\HistogramInterface;
+use App\Metrics\HttpMetrics;
 use OpenTelemetry\SemConv\TraceAttributes;
 use Symfony\Component\EventDispatcher\EventSubscriberInterface;
 use Symfony\Component\HttpKernel\Event\RequestEvent;
@@ -13,25 +11,11 @@ use Symfony\Component\HttpKernel\KernelEvents;
 
 class HttpMetricsSubscriber implements EventSubscriberInterface
 {
-    private static ?MeterInterface $meter = null;
-    private static ?HistogramInterface $requestDurationHistogram = null;
     private array $requestStartTimes = [];
 
-    public function __construct()
-    {
-        // Initialize static meter and histogram only once per PHP worker process
-        if (self::$meter === null) {
-            $meterProvider = Globals::meterProvider();
-            self::$meter = $meterProvider->getMeter('oteltest-http-metrics');
-
-            // Histogram for request duration (using SemConv standard metric name)
-            // https://opentelemetry.io/docs/specs/semconv/http/http-metrics/#metric-httpserverrequest_duration
-            self::$requestDurationHistogram = self::$meter->createHistogram(
-                'http.server.request.duration',
-                's',
-                'Duration of HTTP server requests'
-            );
-        }
+    public function __construct(
+        private readonly HttpMetrics $httpMetrics,
+    ) {
     }
 
     public static function getSubscribedEvents(): array
@@ -84,6 +68,9 @@ class HttpMetricsSubscriber implements EventSubscriberInterface
             $attributes[TraceAttributes::HTTP_ROUTE] = $route;
         }
 
-        self::$requestDurationHistogram->record($duration, $attributes);
+        $this->httpMetrics->requestDurationHistogram->record($duration, $attributes);
+
+        error_log('onKernelResponse requestDurationHistogram ID: ' . spl_object_id($this->httpMetrics->requestDurationHistogram));
+
     }
 }
