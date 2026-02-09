@@ -98,8 +98,8 @@ if ! k3d cluster list | grep -q "$CLUSTER_NAME"; then
     echo -e "${GREEN}Creating k3d cluster '$CLUSTER_NAME'...${NC}"
     k3d cluster create "$CLUSTER_NAME" \
         --agents 1 \
-        --port "8080:80@loadbalancer" \
-        --port "8443:443@loadbalancer" \
+        --port "8180:80@loadbalancer" \
+        --port "8543:443@loadbalancer" \
         --kubeconfig-update-default=false \
         --wait
        
@@ -204,7 +204,7 @@ kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=alloy -n "$NAME
 
 # Build and deploy the PHP application
 echo -e "${GREEN}Building PHP application Docker image...${NC}"
-docker build -f Dockerfile.poc -t oteltest-app:latest .
+docker build -t oteltest-app:latest .
 
 echo -e "${GREEN}Importing image into k3d cluster...${NC}"
 k3d image import oteltest-app:latest -c "$CLUSTER_NAME"
