@@ -39,7 +39,7 @@ spec:
         env:
         # PHP-FPM worker count (change to test with different concurrency)
         - name: PHP_FPM_MAX_CHILDREN
-          value: "4"
+          value: "1"
         # Symfony
         - name: APP_ENV
           value: "prod"
@@ -53,7 +53,7 @@ spec:
         - name: OTEL_SERVICE_NAME
           value: "oteltest-web"
         - name: OTEL_TRACES_EXPORTER
-          value: "otlp"
+          value: "none"
         - name: OTEL_METRICS_EXPORTER
           value: "otlp"
         - name: OTEL_LOGS_EXPORTER

@@ -21,7 +21,7 @@ spec:
         env:
         # Interval between requests in seconds (e.g. 0.5 = 2 req/s, 0.1 = 10 req/s)
         - name: LOAD_INTERVAL
-          value: "0.5"
+          value: "1"
         # Target URL
         - name: TARGET_URL
           value: "http://php-fpm:8080/api/test"

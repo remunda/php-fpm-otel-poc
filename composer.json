@@ -14,7 +14,9 @@
         "symfony/routing": "5.4.*",
         "symfony/config": "5.4.*",
         "doctrine/annotations": "^1.13|^2.0",
+        "open-telemetry/api": "^1.0",
         "open-telemetry/sdk": "^1.0",
+        "open-telemetry/sem-conv": "^1.0",
         "open-telemetry/exporter-otlp": "*",
         "open-telemetry/opentelemetry-auto-symfony": "*",
         "php-http/guzzle7-adapter": "*"
